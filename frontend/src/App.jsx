@@ -15,11 +15,9 @@ function App() {
   const API_URL = import.meta.env.VITE_API_URL;
   const processingRef = useRef(false);
   const lastProcessedRef = useRef(0);
-  const MIN_PROCESS_INTERVAL = 50; // Reduced from 100ms to 50ms
-  const FRAME_SKIP = 2; // Process every 2nd frame
+  const MIN_PROCESS_INTERVAL = 100; // Back to 100ms for stability
   const animationFrameRef = useRef(null);
   const lastPositionsRef = useRef(new Map()); 
-  const frameCountRef = useRef(0);
 
   useEffect(() => {
    
@@ -31,14 +29,15 @@ function App() {
     navigator.mediaDevices.getUserMedia({
       video: {
         facingMode: facingMode,
-        width: { ideal: 640 }, // Reduced from 1280
-        height: { ideal: 480 }, // Reduced from 720
+        width: { ideal: 1280 },  // Back to higher resolution
+        height: { ideal: 720 },
         frameRate: { ideal: 30 }
       }
     })
     .then((stream) => {
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
+        videoRef.current.play();  // Ensure video plays
       }
     })
     .catch((err) => {
@@ -78,29 +77,9 @@ function App() {
       const ctx = canvas.getContext('2d');
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      // Scanner grid effect
-      const gridSize = 30;
-      ctx.strokeStyle = 'rgba(0, 255, 136, 0.2)';
-      ctx.lineWidth = 1;
-      
-      // Draw vertical and horizontal grid lines
-      for (let i = 0; i < canvas.width; i += gridSize) {
-        ctx.beginPath();
-        ctx.moveTo(i, 0);
-        ctx.lineTo(i, canvas.height);
-        ctx.stroke();
-      }
-      for (let i = 0; i < canvas.height; i += gridSize) {
-        ctx.beginPath();
-        ctx.moveTo(0, i);
-        ctx.lineTo(canvas.width, i);
-        ctx.stroke();
-      }
-
       if (qrResults.length > 0) {
-        // Fix scaling calculation
-        const scaleX = displayWidth / (videoRef.current.videoWidth / 4); // Match the capture size
-        const scaleY = displayHeight / (videoRef.current.videoHeight / 4);
+        const scaleX = displayWidth / videoRef.current.videoWidth;
+        const scaleY = displayHeight / videoRef.current.videoHeight;
 
         qrResults.forEach(qr => {
           if (qr.polygon) {
@@ -109,39 +88,32 @@ function App() {
               y: point[1] * scaleY
             }));
 
-            // Draw QR boundary
+            // Draw boundary
             ctx.beginPath();
             ctx.moveTo(scaledPolygon[0].x, scaledPolygon[0].y);
             scaledPolygon.forEach(point => ctx.lineTo(point.x, point.y));
             ctx.closePath();
             
-            // Enhanced neon effect
-            ctx.shadowColor = '#00ff88';
-            ctx.shadowBlur = 20;
             ctx.strokeStyle = '#00ff88';
             ctx.lineWidth = 3;
             ctx.stroke();
 
-            // Digital label
-            const label = `${qr.data}`;
-            ctx.font = '16px "Share Tech Mono"';
-            const textWidth = ctx.measureText(label).width;
-            
-            // Draw label background
-            ctx.fillStyle = 'rgba(0, 20, 40, 0.95)';
+            // Draw label
+            const label = qr.data;
+            ctx.fillStyle = 'rgba(0, 20, 40, 0.9)';
             ctx.fillRect(
               scaledPolygon[0].x,
-              scaledPolygon[0].y - 30,
-              textWidth + 20,
+              scaledPolygon[0].y - 25,
+              ctx.measureText(label).width + 20,
               25
             );
             
-            // Draw label text
             ctx.fillStyle = '#00ff88';
+            ctx.font = '14px monospace';
             ctx.fillText(
               label,
               scaledPolygon[0].x + 10,
-              scaledPolygon[0].y - 12
+              scaledPolygon[0].y - 8
             );
           }
         });
@@ -158,26 +130,20 @@ function App() {
       return;
     }
 
-    // Skip frames for better performance
-    frameCountRef.current += 1;
-    if (frameCountRef.current % FRAME_SKIP !== 0) {
-      return;
-    }
-
     processingRef.current = true;
+    setIsScanning(true);
     
     try {
       const canvas = document.createElement("canvas");
-      canvas.width = videoRef.current.videoWidth / 4;
-      canvas.height = videoRef.current.videoHeight / 4;
+      const videoWidth = videoRef.current.videoWidth;
+      const videoHeight = videoRef.current.videoHeight;
       
-      const ctx = canvas.getContext("2d", {
-        alpha: false,
-        willReadFrequently: true
-      });
+      canvas.width = videoWidth;  // Use full resolution
+      canvas.height = videoHeight;
       
-      ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
-      const imageData = canvas.toDataURL("image/jpeg", 0.7);
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(videoRef.current, 0, 0);
+      const imageData = canvas.toDataURL("image/jpeg", 0.8);
       
       addDebugLog(`Attempting to fetch: ${API_URL}/scan`);
       const response = await fetch(`${API_URL}/scan`, {
@@ -208,7 +174,7 @@ function App() {
       setError(`Connection failed: ${err.message}`);
     } finally {
       processingRef.current = false;
-      requestAnimationFrame(captureFrame); // Immediate next frame request
+      setIsScanning(false);
     }
   };
 
