@@ -17,10 +17,10 @@ function App() {
   const API_URL = import.meta.env.VITE_API_URL;
   const processingRef = useRef(false);
   const lastProcessedRef = useRef(0);
-  const MIN_PROCESS_INTERVAL = 30; // Faster interval
+  const MIN_PROCESS_INTERVAL = 30;
   const CAPTURE_SIZE = {
-    width: 640,
-    height: 480
+    width: 640,    // Back to optimal resolution
+    height: 480    // Better for processing
   };
   const animationFrameRef = useRef(null);
   const lastPositionsRef = useRef(new Map()); 
@@ -30,7 +30,7 @@ function App() {
   const [sessionStats, setSessionStats] = useState({ present: 0, absent: 0 });
   const capturedCodesRef = useRef(new Set());
   const frameCountRef = useRef(0);
-  const FRAME_SKIP = 2; // Process every 2nd frame
+  const FRAME_SKIP = 1;
 
   useEffect(() => {
    
@@ -44,7 +44,11 @@ function App() {
         facingMode: facingMode,
         width: { ideal: CAPTURE_SIZE.width },
         height: { ideal: CAPTURE_SIZE.height },
-        frameRate: { ideal: 15 } // Lower framerate for better processing
+        frameRate: { ideal: 30 },
+        zoom: true,  // Enable zoom if available
+        focusMode: 'continuous',  // Continuous auto-focus
+        whiteBalance: 'continuous',
+        exposureMode: 'continuous'
       }
     })
     .then((stream) => {
@@ -235,12 +239,6 @@ function App() {
       return;
     }
 
-    frameCountRef.current++;
-    if (frameCountRef.current % FRAME_SKIP !== 0) {
-      requestAnimationFrame(captureFrame);
-      return;
-    }
-
     processingRef.current = true;
     
     try {
@@ -248,23 +246,20 @@ function App() {
       canvas.width = CAPTURE_SIZE.width;
       canvas.height = CAPTURE_SIZE.height;
       
-      const ctx = canvas.getContext("2d", {
+      const ctx = canvas.getContext("2d", { 
         alpha: false,
-        willReadFrequently: true,
-        desynchronized: true // Hardware acceleration
+        willReadFrequently: true
       });
 
+      // Simple capture without extra processing
       ctx.drawImage(
-        videoRef.current,
-        0, 0,
-        videoRef.current.videoWidth,
-        videoRef.current.videoHeight,
-        0, 0,
-        CAPTURE_SIZE.width,
+        videoRef.current, 
+        0, 0, 
+        CAPTURE_SIZE.width, 
         CAPTURE_SIZE.height
       );
 
-      const imageData = canvas.toDataURL("image/jpeg", 0.3); // Lower quality for speed
+      const imageData = canvas.toDataURL("image/jpeg", 0.8);
       
       const response = await fetch(`${API_URL}/scan`, {
         method: "POST",
@@ -275,14 +270,10 @@ function App() {
       if (response.ok) {
         const data = await response.json();
         if (data.length > 0) {
-          setQrResults(prev => {
-            // Only update if data changed
-            if (JSON.stringify(prev) !== JSON.stringify(data)) {
-              data.forEach(result => handleSuccessfulScan(result.data));
-              return data;
-            }
-            return prev;
-          });
+          setQrResults(data);
+          data.forEach(result => handleSuccessfulScan(result.data));
+        } else {
+          setQrResults([]);
         }
       }
     } catch (err) {
