@@ -10,15 +10,22 @@ function App() {
   const [facingMode, setFacingMode] = useState('environment');
   const [debugLogs, setDebugLogs] = useState([]);
   const [showDebug, setShowDebug] = useState(false);
+  const [scanCount, setScanCount] = useState(0);
+  const [lastScan, setLastScan] = useState(null);
   const API_URL = import.meta.env.VITE_API_URL;
+  const processingRef = useRef(false);
+  const lastProcessedRef = useRef(0);
+  const MIN_PROCESS_INTERVAL = 100; // Faster scanning
+  const animationFrameRef = useRef(null);
+  const lastPositionsRef = useRef(new Map()); 
 
   useEffect(() => {
-    // Stop any existing tracks
+   
     if (videoRef.current?.srcObject) {
       videoRef.current.srcObject.getTracks().forEach(track => track.stop());
     }
 
-    // Start webcam with constraints
+   
     navigator.mediaDevices.getUserMedia({
       video: {
         facingMode: facingMode,
@@ -36,9 +43,18 @@ function App() {
       setError("Failed to access camera: " + err.message);
     });
 
-    const interval = setInterval(captureFrame, 1000);
+    const processFrame = async () => {
+      if (!processingRef.current) {
+        await captureFrame();
+      }
+      animationFrameRef.current = requestAnimationFrame(processFrame);
+    };
+
+    processFrame();
     return () => {
-      clearInterval(interval);
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+      }
       videoRef.current?.srcObject?.getTracks().forEach(track => track.stop());
     };
   }, [facingMode]);
@@ -51,76 +67,156 @@ function App() {
   useEffect(() => {
     if (canvasRef.current && videoRef.current) {
       const canvas = canvasRef.current;
-      canvas.width = videoRef.current.videoWidth;
-      canvas.height = videoRef.current.videoHeight;
+      const displayWidth = videoRef.current.clientWidth;
+      const displayHeight = videoRef.current.clientHeight;
+      
+      canvas.width = displayWidth;
+      canvas.height = displayHeight;
       const ctx = canvas.getContext('2d');
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+      // Scanner grid effect
+      const gridSize = 30;
+      ctx.strokeStyle = 'rgba(0, 255, 0, 0.2)';
+      ctx.lineWidth = 1;
+      for (let i = 0; i < canvas.width; i += gridSize) {
+        ctx.beginPath();
+        ctx.moveTo(i, 0);
+        ctx.lineTo(i, canvas.height);
+        ctx.stroke();
+      }
+      for (let i = 0; i < canvas.height; i += gridSize) {
+        ctx.beginPath();
+        ctx.moveTo(0, i);
+        ctx.lineTo(canvas.width, i);
+        ctx.stroke();
+      }
+
+      // Scanning line effect
+      const scanLineY = (Date.now() % 1000) / 1000 * canvas.height;
+      ctx.strokeStyle = 'rgba(0, 255, 0, 0.8)';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(0, scanLineY);
+      ctx.lineTo(canvas.width, scanLineY);
+      ctx.stroke();
+
       if (qrResults.length > 0) {
+        const scaleX = displayWidth / (videoRef.current.videoWidth / 2);
+        const scaleY = displayHeight / (videoRef.current.videoHeight / 2);
+
         qrResults.forEach(qr => {
           if (qr.polygon) {
-            // Draw polygon
+            const scaledPolygon = qr.polygon.map(point => ({
+              x: point[0] * scaleX,
+              y: point[1] * scaleY
+            }));
+
+            // Smooth position transition
+            const qrId = qr.data; // Use QR data as identifier
+            const lastPos = lastPositionsRef.current.get(qrId);
+            if (lastPos) {
+              scaledPolygon.forEach((point, i) => {
+                point.x = point.x * 0.3 + lastPos[i].x * 0.7; // Smooth transition
+                point.y = point.y * 0.3 + lastPos[i].y * 0.7;
+              });
+            }
+            lastPositionsRef.current.set(qrId, scaledPolygon);
+
+            // Draw tracking box
             ctx.beginPath();
-            ctx.moveTo(qr.polygon[0][0], qr.polygon[0][1]);
-            qr.polygon.forEach((point, index) => {
-              if (index > 0) ctx.lineTo(point[0], point[1]);
+            ctx.moveTo(scaledPolygon[0].x, scaledPolygon[0].y);
+            scaledPolygon.forEach((point, index) => {
+              if (index > 0) ctx.lineTo(point.x, point.y);
             });
-            ctx.lineTo(qr.polygon[0][0], qr.polygon[0][1]);
+            ctx.lineTo(scaledPolygon[0].x, scaledPolygon[0].y);
             
-            // Styling
-            ctx.strokeStyle = '#00FF00';
-            ctx.lineWidth = 4;
+            // Neon effect
+            ctx.shadowColor = '#00ff00';
+            ctx.shadowBlur = 15;
+            ctx.strokeStyle = '#00ff00';
+            ctx.lineWidth = 2;
             ctx.stroke();
 
-            // Draw corner markers
-            qr.polygon.forEach(point => {
+            // Tech corners
+            scaledPolygon.forEach(point => {
               ctx.beginPath();
-              ctx.arc(point[0], point[1], 8, 0, 2 * Math.PI);
-              ctx.fillStyle = '#FF0000';
-              ctx.fill();
+              ctx.moveTo(point.x - 10, point.y);
+              ctx.lineTo(point.x + 10, point.y);
+              ctx.moveTo(point.x, point.y - 10);
+              ctx.lineTo(point.x, point.y + 10);
+              ctx.strokeStyle = '#ff0000';
+              ctx.lineWidth = 1;
+              ctx.stroke();
             });
 
-            // Add label
-            const label = `${qr.type}: ${qr.data}`;
-            ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-            ctx.fillRect(qr.rect.x, qr.rect.y - 30, ctx.measureText(label).width + 20, 25);
-            ctx.fillStyle = '#FFFFFF';
-            ctx.font = '16px Arial';
-            ctx.fillText(label, qr.rect.x + 10, qr.rect.y - 10);
+            // Update rectangle coordinates
+            const scaledRect = {
+              x: qr.rect.x * scaleX,
+              y: qr.rect.y * scaleY,
+              width: qr.rect.width * scaleX,
+              height: qr.rect.height * scaleY
+            };
+
+            // Digital label background
+            const label = `[${qr.type}] ${qr.data}`;
+            ctx.fillStyle = 'rgba(0, 20, 40, 0.9)';
+            const padding = 10;
+            const labelWidth = ctx.measureText(label).width + (padding * 2);
+            ctx.fillRect(scaledRect.x, scaledRect.y - 30, labelWidth, 25);
+            
+            // Label border
+            ctx.strokeStyle = '#00ff00';
+            ctx.strokeRect(scaledRect.x, scaledRect.y - 30, labelWidth, 25);
+            
+            // Text
+            ctx.fillStyle = '#00ff00';
+            ctx.font = '14px "Courier New"';
+            ctx.fillText(label, scaledRect.x + padding, scaledRect.y - 12);
           }
         });
       }
+
+      // Clean up old positions
+      if (qrResults.length === 0) {
+        lastPositionsRef.current.clear();
+      }
+
+      // Add success flash effect when new QR detected
+      if (lastScan !== qrResults[0]?.data) {
+        ctx.fillStyle = 'rgba(0, 255, 0, 0.2)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        setLastScan(qrResults[0]?.data);
+        setScanCount(prev => prev + 1);
+      }
     }
-  }, [qrResults]);
+  }, [qrResults, lastScan]);
 
   const addDebugLog = (message) => {
     setDebugLogs(prev => [...prev.slice(-4), message]); // Keep last 5 logs
   };
 
   const captureFrame = async () => {
-    if (!videoRef.current || !videoRef.current.videoWidth) {
-      addDebugLog('Video not ready yet');
+    if (!videoRef.current?.videoWidth || processingRef.current) {
       return;
     }
 
+    processingRef.current = true;
     setIsScanning(true);
-    setError(null);
+    lastProcessedRef.current = Date.now();
     
     try {
       const canvas = document.createElement("canvas");
       const videoWidth = videoRef.current.videoWidth;
       const videoHeight = videoRef.current.videoHeight;
       
-      addDebugLog(`Video: ${videoWidth}x${videoHeight}`);
+      // Optimize canvas operations
+      canvas.width = videoWidth / 2; // Reduce size for faster processing
+      canvas.height = videoHeight / 2;
       
-      canvas.width = videoWidth;
-      canvas.height = videoHeight;
-      
-      const ctx = canvas.getContext("2d");
-      ctx.drawImage(videoRef.current, 0, 0);
-      const imageData = canvas.toDataURL("image/jpeg");
-      
-      addDebugLog(`Image size: ${Math.round(imageData.length / 1024)}KB`);
+      const ctx = canvas.getContext("2d", { alpha: false });
+      ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
+      const imageData = canvas.toDataURL("image/jpeg", 0.7); // Reduced quality for faster transfer
       
       addDebugLog(`Attempting to fetch: ${API_URL}/scan`);
       const response = await fetch(`${API_URL}/scan`, {
@@ -150,6 +246,7 @@ function App() {
       addDebugLog(`Network Error: ${err.message}`);
       setError(`Connection failed: ${err.message}`);
     } finally {
+      processingRef.current = false;
       setIsScanning(false);
     }
   };
@@ -157,37 +254,59 @@ function App() {
   return (
     <div style={{ 
       minHeight: '100vh',
-      background: '#f0f2f5',
-      padding: '1rem'
+      background: '#0a0a0a',
+      padding: '1rem',
+      color: '#00ff00',
+      fontFamily: '"Courier New", monospace'
     }}>
       <div style={{
         maxWidth: '800px',
         margin: '0 auto',
-        background: 'white',
-        borderRadius: '12px',
+        background: '#111',
+        borderRadius: '4px',
         padding: '2rem',
-        boxShadow: '0 2px 8px rgba(0,0,0,0.1)'
+        border: '1px solid #00ff00',
+        boxShadow: '0 0 20px rgba(0, 255, 0, 0.2)'
       }}>
-        <h1 style={{ 
-          color: '#1a1a1a',
-          fontSize: '1.8rem',
+        <div style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
           marginBottom: '2rem'
-        }}>📷 QR Code Scanner</h1>
+        }}>
+          <h1 style={{ 
+            color: '#00ff00',
+            fontSize: '1.8rem',
+            textShadow: '0 0 10px rgba(0, 255, 0, 0.5)',
+            margin: 0
+          }}>⚡ SCHOOL ATTENDANCE SCANNER</h1>
+          <div style={{
+            background: '#001800',
+            padding: '0.5rem 1rem',
+            borderRadius: '4px',
+            border: '1px solid #00ff00'
+          }}>
+            <span style={{ fontSize: '1.2rem' }}>Students Scanned: {scanCount}</span>
+          </div>
+        </div>
 
         <button 
           onClick={() => setFacingMode(current => current === 'environment' ? 'user' : 'environment')}
           style={{
-            background: '#007AFF',
-            color: 'white',
-            border: 'none',
+            background: '#001a00',
+            color: '#00ff00',
+            border: '1px solid #00ff00',
             padding: '10px 20px',
-            borderRadius: '8px',
-            fontSize: '1rem',
+            borderRadius: '4px',
+            fontSize: '0.9rem',
             cursor: 'pointer',
-            marginBottom: '1rem'
+            marginBottom: '1rem',
+            textTransform: 'uppercase',
+            letterSpacing: '1px',
+            boxShadow: '0 0 10px rgba(0, 255, 0, 0.2)'
           }}
         >
-          Switch Camera ({facingMode === 'environment' ? 'Back' : 'Front'})
+          {facingMode === 'environment' ? '◀ SWITCH TO FRONT CAM' : '▶ SWITCH TO BACK CAM'}
         </button>
 
         <div style={{ 
@@ -195,9 +314,10 @@ function App() {
           width: '100%',
           maxWidth: '600px',
           margin: '1rem auto',
-          borderRadius: '12px',
+          borderRadius: '4px',
           overflow: 'hidden',
-          boxShadow: '0 4px 12px rgba(0,0,0,0.15)'
+          border: '1px solid #00ff00',
+          boxShadow: '0 0 20px rgba(0, 255, 0, 0.2)'
         }}>
           <video 
             ref={videoRef} 
@@ -223,35 +343,46 @@ function App() {
               top: '50%',
               left: '50%',
               transform: 'translate(-50%, -50%)',
-              background: 'rgba(0,0,0,0.7)',
-              color: 'white',
+              background: 'rgba(0, 20, 0, 0.9)',
+              color: '#00ff00',
               padding: '8px 16px',
-              borderRadius: '20px',
-              fontSize: '0.9rem'
+              borderRadius: '4px',
+              fontSize: '0.9rem',
+              border: '1px solid #00ff00',
+              animation: 'pulse 2s infinite'
             }}>
-              Scanning...
+              ▶ SCANNING TARGET
+            </div>
+          )}
+          {qrResults.length > 0 && (
+            <div style={{
+              position: 'absolute',
+              top: '1rem',
+              right: '1rem',
+              background: 'rgba(0, 40, 0, 0.9)',
+              padding: '0.5rem',
+              borderRadius: '4px',
+              border: '1px solid #00ff00',
+              animation: 'blink 1s infinite'
+            }}>
+              ✓ STUDENT VERIFIED
             </div>
           )}
         </div>
 
         <div style={{
-          background: '#f8f9fa',
+          background: '#001800',
           padding: '1rem',
           borderRadius: '8px',
-          marginTop: '1rem'
+          marginTop: '1rem',
+          border: '1px solid #00ff00'
         }}>
-          <h3 style={{ margin: '0 0 1rem 0', color: '#2c3e50' }}>Detected QR Codes:</h3>
-          {error && (
-            <div style={{ 
-              color: '#dc3545',
-              background: '#ffe6e6',
-              padding: '0.5rem',
-              borderRadius: '4px',
-              marginBottom: '1rem'
-            }}>
-              {error}
-            </div>
-          )}
+          <h3 style={{ 
+            margin: '0 0 1rem 0', 
+            color: '#00ff00',
+            borderBottom: '1px solid #00ff00',
+            paddingBottom: '0.5rem'
+          }}>Recent Scans:</h3>
           {qrResults.map((qr, idx) => (
             <div 
               key={idx}
@@ -307,6 +438,22 @@ function App() {
           ))}
         </div>
       )}
+
+      <style>{`
+        @keyframes pulse {
+          0% { opacity: 0.6; }
+          50% { opacity: 1; }
+          100% { opacity: 0.6; }
+        }
+        @keyframes blink {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.5; }
+        }
+        @keyframes scan {
+          0% { transform: translateY(-100%); }
+          100% { transform: translateY(100%); }
+        }
+      `}</style>
     </div>
   );
 }
