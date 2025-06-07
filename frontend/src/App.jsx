@@ -15,9 +15,11 @@ function App() {
   const API_URL = import.meta.env.VITE_API_URL;
   const processingRef = useRef(false);
   const lastProcessedRef = useRef(0);
-  const MIN_PROCESS_INTERVAL = 100; // Faster scanning
+  const MIN_PROCESS_INTERVAL = 50; // Reduced from 100ms to 50ms
+  const FRAME_SKIP = 2; // Process every 2nd frame
   const animationFrameRef = useRef(null);
   const lastPositionsRef = useRef(new Map()); 
+  const frameCountRef = useRef(0);
 
   useEffect(() => {
    
@@ -29,8 +31,9 @@ function App() {
     navigator.mediaDevices.getUserMedia({
       video: {
         facingMode: facingMode,
-        width: { ideal: 1280 },
-        height: { ideal: 720 }
+        width: { ideal: 640 }, // Reduced from 1280
+        height: { ideal: 480 }, // Reduced from 720
+        frameRate: { ideal: 30 }
       }
     })
     .then((stream) => {
@@ -77,8 +80,10 @@ function App() {
 
       // Scanner grid effect
       const gridSize = 30;
-      ctx.strokeStyle = 'rgba(0, 255, 0, 0.2)';
+      ctx.strokeStyle = 'rgba(0, 255, 136, 0.2)';
       ctx.lineWidth = 1;
+      
+      // Draw vertical and horizontal grid lines
       for (let i = 0; i < canvas.width; i += gridSize) {
         ctx.beginPath();
         ctx.moveTo(i, 0);
@@ -92,18 +97,10 @@ function App() {
         ctx.stroke();
       }
 
-      // Scanning line effect
-      const scanLineY = (Date.now() % 1000) / 1000 * canvas.height;
-      ctx.strokeStyle = 'rgba(0, 255, 0, 0.8)';
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.moveTo(0, scanLineY);
-      ctx.lineTo(canvas.width, scanLineY);
-      ctx.stroke();
-
       if (qrResults.length > 0) {
-        const scaleX = displayWidth / (videoRef.current.videoWidth / 2);
-        const scaleY = displayHeight / (videoRef.current.videoHeight / 2);
+        // Fix scaling calculation
+        const scaleX = displayWidth / (videoRef.current.videoWidth / 4); // Match the capture size
+        const scaleY = displayHeight / (videoRef.current.videoHeight / 4);
 
         qrResults.forEach(qr => {
           if (qr.polygon) {
@@ -112,85 +109,45 @@ function App() {
               y: point[1] * scaleY
             }));
 
-            // Smooth position transition
-            const qrId = qr.data; // Use QR data as identifier
-            const lastPos = lastPositionsRef.current.get(qrId);
-            if (lastPos) {
-              scaledPolygon.forEach((point, i) => {
-                point.x = point.x * 0.3 + lastPos[i].x * 0.7; // Smooth transition
-                point.y = point.y * 0.3 + lastPos[i].y * 0.7;
-              });
-            }
-            lastPositionsRef.current.set(qrId, scaledPolygon);
-
-            // Draw tracking box
+            // Draw QR boundary
             ctx.beginPath();
             ctx.moveTo(scaledPolygon[0].x, scaledPolygon[0].y);
-            scaledPolygon.forEach((point, index) => {
-              if (index > 0) ctx.lineTo(point.x, point.y);
-            });
-            ctx.lineTo(scaledPolygon[0].x, scaledPolygon[0].y);
+            scaledPolygon.forEach(point => ctx.lineTo(point.x, point.y));
+            ctx.closePath();
             
-            // Neon effect
-            ctx.shadowColor = '#00ff00';
-            ctx.shadowBlur = 15;
-            ctx.strokeStyle = '#00ff00';
-            ctx.lineWidth = 2;
+            // Enhanced neon effect
+            ctx.shadowColor = '#00ff88';
+            ctx.shadowBlur = 20;
+            ctx.strokeStyle = '#00ff88';
+            ctx.lineWidth = 3;
             ctx.stroke();
 
-            // Tech corners
-            scaledPolygon.forEach(point => {
-              ctx.beginPath();
-              ctx.moveTo(point.x - 10, point.y);
-              ctx.lineTo(point.x + 10, point.y);
-              ctx.moveTo(point.x, point.y - 10);
-              ctx.lineTo(point.x, point.y + 10);
-              ctx.strokeStyle = '#ff0000';
-              ctx.lineWidth = 1;
-              ctx.stroke();
-            });
-
-            // Update rectangle coordinates
-            const scaledRect = {
-              x: qr.rect.x * scaleX,
-              y: qr.rect.y * scaleY,
-              width: qr.rect.width * scaleX,
-              height: qr.rect.height * scaleY
-            };
-
-            // Digital label background
-            const label = `[${qr.type}] ${qr.data}`;
-            ctx.fillStyle = 'rgba(0, 20, 40, 0.9)';
-            const padding = 10;
-            const labelWidth = ctx.measureText(label).width + (padding * 2);
-            ctx.fillRect(scaledRect.x, scaledRect.y - 30, labelWidth, 25);
+            // Digital label
+            const label = `${qr.data}`;
+            ctx.font = '16px "Share Tech Mono"';
+            const textWidth = ctx.measureText(label).width;
             
-            // Label border
-            ctx.strokeStyle = '#00ff00';
-            ctx.strokeRect(scaledRect.x, scaledRect.y - 30, labelWidth, 25);
+            // Draw label background
+            ctx.fillStyle = 'rgba(0, 20, 40, 0.95)';
+            ctx.fillRect(
+              scaledPolygon[0].x,
+              scaledPolygon[0].y - 30,
+              textWidth + 20,
+              25
+            );
             
-            // Text
-            ctx.fillStyle = '#00ff00';
-            ctx.font = '14px "Courier New"';
-            ctx.fillText(label, scaledRect.x + padding, scaledRect.y - 12);
+            // Draw label text
+            ctx.fillStyle = '#00ff88';
+            ctx.fillText(
+              label,
+              scaledPolygon[0].x + 10,
+              scaledPolygon[0].y - 12
+            );
           }
         });
       }
-
-      // Clean up old positions
-      if (qrResults.length === 0) {
-        lastPositionsRef.current.clear();
-      }
-
-      // Add success flash effect when new QR detected
-      if (lastScan !== qrResults[0]?.data) {
-        ctx.fillStyle = 'rgba(0, 255, 0, 0.2)';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-        setLastScan(qrResults[0]?.data);
-        setScanCount(prev => prev + 1);
-      }
     }
-  }, [qrResults, lastScan]);
+  }, [qrResults]);
 
   const addDebugLog = (message) => {
     setDebugLogs(prev => [...prev.slice(-4), message]); // Keep last 5 logs
@@ -201,22 +158,26 @@ function App() {
       return;
     }
 
+    // Skip frames for better performance
+    frameCountRef.current += 1;
+    if (frameCountRef.current % FRAME_SKIP !== 0) {
+      return;
+    }
+
     processingRef.current = true;
-    setIsScanning(true);
-    lastProcessedRef.current = Date.now();
     
     try {
       const canvas = document.createElement("canvas");
-      const videoWidth = videoRef.current.videoWidth;
-      const videoHeight = videoRef.current.videoHeight;
+      canvas.width = videoRef.current.videoWidth / 4;
+      canvas.height = videoRef.current.videoHeight / 4;
       
-      // Optimize canvas operations
-      canvas.width = videoWidth / 2; // Reduce size for faster processing
-      canvas.height = videoHeight / 2;
+      const ctx = canvas.getContext("2d", {
+        alpha: false,
+        willReadFrequently: true
+      });
       
-      const ctx = canvas.getContext("2d", { alpha: false });
       ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
-      const imageData = canvas.toDataURL("image/jpeg", 0.7); // Reduced quality for faster transfer
+      const imageData = canvas.toDataURL("image/jpeg", 0.7);
       
       addDebugLog(`Attempting to fetch: ${API_URL}/scan`);
       const response = await fetch(`${API_URL}/scan`, {
@@ -247,81 +208,83 @@ function App() {
       setError(`Connection failed: ${err.message}`);
     } finally {
       processingRef.current = false;
-      setIsScanning(false);
+      requestAnimationFrame(captureFrame); // Immediate next frame request
     }
   };
 
   return (
     <div style={{ 
       minHeight: '100vh',
-      background: '#0a0a0a',
+      background: '#000913',
       padding: '1rem',
-      color: '#00ff00',
-      fontFamily: '"Courier New", monospace'
+      color: '#00ff88',
+      fontFamily: '"Share Tech Mono", monospace'
     }}>
       <div style={{
-        maxWidth: '800px',
+        maxWidth: '900px',
         margin: '0 auto',
-        background: '#111',
-        borderRadius: '4px',
+        background: 'rgba(0, 20, 40, 0.8)',
+        borderRadius: '8px',
         padding: '2rem',
-        border: '1px solid #00ff00',
-        boxShadow: '0 0 20px rgba(0, 255, 0, 0.2)'
+        border: '1px solid #00ff88',
+        boxShadow: '0 0 30px rgba(0, 255, 136, 0.2)'
       }}>
         <div style={{
           display: 'flex',
           justifyContent: 'space-between',
           alignItems: 'center',
-          marginBottom: '2rem'
+          marginBottom: '2rem',
+          padding: '1rem',
+          background: 'rgba(0, 40, 60, 0.5)',
+          borderRadius: '4px'
         }}>
-          <h1 style={{ 
-            color: '#00ff00',
-            fontSize: '1.8rem',
-            textShadow: '0 0 10px rgba(0, 255, 0, 0.5)',
-            margin: 0
-          }}>⚡ SCHOOL ATTENDANCE SCANNER</h1>
+          <div>
+            <h1 style={{ 
+              color: '#00ff88',
+              fontSize: '2rem',
+              textShadow: '0 0 10px rgba(0, 255, 136, 0.5)',
+              margin: 0,
+              letterSpacing: '2px'
+            }}>STUDENT VERIFICATION SYSTEM</h1>
+            <div style={{ color: '#0cf', fontSize: '0.9rem', marginTop: '0.5rem' }}>
+              {new Date().toLocaleDateString()} • ACTIVE SCAN
+            </div>
+          </div>
           <div style={{
-            background: '#001800',
-            padding: '0.5rem 1rem',
+            background: 'rgba(0, 40, 20, 0.9)',
+            padding: '1rem',
             borderRadius: '4px',
-            border: '1px solid #00ff00'
+            border: '1px solid #00ff88',
+            minWidth: '150px',
+            textAlign: 'center'
           }}>
-            <span style={{ fontSize: '1.2rem' }}>Students Scanned: {scanCount}</span>
+            <div style={{ fontSize: '0.8rem', color: '#0cf' }}>VERIFIED</div>
+            <div style={{ 
+              fontSize: '2rem',
+              fontWeight: 'bold',
+              textShadow: '0 0 10px rgba(0, 255, 136, 0.5)'
+            }}>{scanCount}</div>
           </div>
         </div>
-
-        <button 
-          onClick={() => setFacingMode(current => current === 'environment' ? 'user' : 'environment')}
-          style={{
-            background: '#001a00',
-            color: '#00ff00',
-            border: '1px solid #00ff00',
-            padding: '10px 20px',
-            borderRadius: '4px',
-            fontSize: '0.9rem',
-            cursor: 'pointer',
-            marginBottom: '1rem',
-            textTransform: 'uppercase',
-            letterSpacing: '1px',
-            boxShadow: '0 0 10px rgba(0, 255, 0, 0.2)'
-          }}
-        >
-          {facingMode === 'environment' ? '◀ SWITCH TO FRONT CAM' : '▶ SWITCH TO BACK CAM'}
-        </button>
 
         <div style={{ 
           position: 'relative',
           width: '100%',
-          maxWidth: '600px',
+          maxWidth: '700px',
           margin: '1rem auto',
-          borderRadius: '4px',
+          borderRadius: '8px',
           overflow: 'hidden',
-          border: '1px solid #00ff00',
-          boxShadow: '0 0 20px rgba(0, 255, 0, 0.2)'
+          border: '2px solid #00ff88',
+          boxShadow: '0 0 30px rgba(0, 255, 136, 0.2)'
         }}>
           <video 
             ref={videoRef} 
-            style={{ width: '100%', display: 'block', borderRadius: '12px' }} 
+            style={{ 
+              width: '100%', 
+              display: 'block', 
+              borderRadius: '8px',
+              filter: 'contrast(1.1) brightness(1.1)'
+            }} 
             autoPlay 
             playsInline 
             muted 
@@ -340,49 +303,43 @@ function App() {
           {isScanning && (
             <div style={{
               position: 'absolute',
-              top: '50%',
+              bottom: '1rem',
               left: '50%',
-              transform: 'translate(-50%, -50%)',
-              background: 'rgba(0, 20, 0, 0.9)',
-              color: '#00ff00',
-              padding: '8px 16px',
-              borderRadius: '4px',
+              transform: 'translateX(-50%)',
+              background: 'rgba(0, 40, 20, 0.9)',
+              color: '#00ff88',
+              padding: '0.5rem 2rem',
+              borderRadius: '20px',
               fontSize: '0.9rem',
-              border: '1px solid #00ff00',
-              animation: 'pulse 2s infinite'
+              border: '1px solid #00ff88',
+              animation: 'pulse 2s infinite',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem'
             }}>
-              ▶ SCANNING TARGET
-            </div>
-          )}
-          {qrResults.length > 0 && (
-            <div style={{
-              position: 'absolute',
-              top: '1rem',
-              right: '1rem',
-              background: 'rgba(0, 40, 0, 0.9)',
-              padding: '0.5rem',
-              borderRadius: '4px',
-              border: '1px solid #00ff00',
-              animation: 'blink 1s infinite'
-            }}>
-              ✓ STUDENT VERIFIED
+              <div className="scanner-dot" /> SCANNING
             </div>
           )}
         </div>
 
         <div style={{
-          background: '#001800',
-          padding: '1rem',
+          background: 'rgba(0, 20, 30, 0.8)',
+          padding: '1.5rem',
           borderRadius: '8px',
           marginTop: '1rem',
-          border: '1px solid #00ff00'
+          border: '1px solid #00ff88'
         }}>
           <h3 style={{ 
             margin: '0 0 1rem 0', 
-            color: '#00ff00',
-            borderBottom: '1px solid #00ff00',
-            paddingBottom: '0.5rem'
-          }}>Recent Scans:</h3>
+            color: '#0cf',
+            borderBottom: '1px solid #00ff88',
+            paddingBottom: '0.5rem',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.5rem'
+          }}>
+            <span className="icon">⚡</span> VERIFICATION LOG
+          </h3>
           {qrResults.map((qr, idx) => (
             <div 
               key={idx}
@@ -441,17 +398,18 @@ function App() {
 
       <style>{`
         @keyframes pulse {
-          0% { opacity: 0.6; }
-          50% { opacity: 1; }
-          100% { opacity: 0.6; }
-        }
-        @keyframes blink {
           0%, 100% { opacity: 1; }
-          50% { opacity: 0.5; }
+          50% { opacity: 0.6; }
         }
-        @keyframes scan {
-          0% { transform: translateY(-100%); }
-          100% { transform: translateY(100%); }
+        .scanner-dot {
+          width: 8px;
+          height: 8px;
+          background: #00ff88;
+          border-radius: 50%;
+          animation: pulse 1s infinite;
+        }
+        .icon {
+          color: #0cf;
         }
       `}</style>
     </div>
