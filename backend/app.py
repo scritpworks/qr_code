@@ -26,9 +26,19 @@ def scan_qr():
     results = []
 
     for qr in qr_codes:
+        # Get all points and polygon data
+        polygon_points = [(point.x, point.y) for point in qr.polygon]
+        
         results.append({
             "data": qr.data.decode("utf-8"),
-            "position": {"x": qr.rect.left, "y": qr.rect.top}
+            "type": qr.type,
+            "polygon": polygon_points,
+            "rect": {
+                "x": qr.rect.left,
+                "y": qr.rect.top,
+                "width": qr.rect.width,
+                "height": qr.rect.height
+            }
         })
 
     return jsonify(results)
