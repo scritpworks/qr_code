@@ -15,9 +15,10 @@ function App() {
   const API_URL = import.meta.env.VITE_API_URL;
   const processingRef = useRef(false);
   const lastProcessedRef = useRef(0);
-  const MIN_PROCESS_INTERVAL = 100; // Back to 100ms for stability
+  const MIN_PROCESS_INTERVAL = 50; 
   const animationFrameRef = useRef(null);
   const lastPositionsRef = useRef(new Map()); 
+  const scannerRef = useRef(null);
 
   useEffect(() => {
    
@@ -65,6 +66,97 @@ function App() {
     addDebugLog(`Frontend running locally at: ${window.location.origin}`);
     addDebugLog(`Backend API: ${API_URL}`);
   }, [API_URL]);
+
+  useEffect(() => {
+    if (canvasRef.current && videoRef.current) {
+      const canvas = canvasRef.current;
+      const ctx = canvas.getContext('2d');
+      let animationFrame;
+      
+      const drawScanner = (timestamp) => {
+        const width = canvas.width;
+        const height = canvas.height;
+        ctx.clearRect(0, 0, width, height);
+
+        // Draw scanning grid
+        ctx.strokeStyle = 'rgba(0, 255, 136, 0.2)';
+        const gridSize = 40;
+        for (let x = 0; x < width; x += gridSize) {
+          for (let y = 0; y < height; y += gridSize) {
+            ctx.beginPath();
+            ctx.rect(x, y, gridSize, gridSize);
+            ctx.stroke();
+          }
+        }
+
+        // Animated scan line
+        const scanY = ((timestamp % 3000) / 3000) * height;
+        const gradient = ctx.createLinearGradient(0, scanY - 10, 0, scanY + 10);
+        gradient.addColorStop(0, 'rgba(0, 255, 136, 0)');
+        gradient.addColorStop(0.5, 'rgba(0, 255, 136, 0.8)');
+        gradient.addColorStop(1, 'rgba(0, 255, 136, 0)');
+        
+        ctx.strokeStyle = gradient;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(0, scanY);
+        ctx.lineTo(width, scanY);
+        ctx.stroke();
+
+        // Draw QR markers
+        if (qrResults.length > 0) {
+          qrResults.forEach(qr => {
+            if (qr.polygon) {
+              const scaleX = width / videoRef.current.videoWidth;
+              const scaleY = height / videoRef.current.videoHeight;
+              
+              // Draw targeting box
+              ctx.beginPath();
+              ctx.moveTo(qr.polygon[0][0] * scaleX, qr.polygon[0][1] * scaleY);
+              qr.polygon.forEach(point => {
+                ctx.lineTo(point[0] * scaleX, point[1] * scaleY);
+              });
+              ctx.closePath();
+              
+              // Glowing effect
+              ctx.shadowColor = '#00ff88';
+              ctx.shadowBlur = 15;
+              ctx.strokeStyle = '#00ff88';
+              ctx.lineWidth = 2;
+              ctx.stroke();
+              
+              // Corner markers
+              qr.polygon.forEach(point => {
+                const x = point[0] * scaleX;
+                const y = point[1] * scaleY;
+                
+                // Cross
+                ctx.strokeStyle = '#ff0000';
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(x - 10, y);
+                ctx.lineTo(x + 10, y);
+                ctx.moveTo(x, y - 10);
+                ctx.lineTo(x, y + 10);
+                ctx.stroke();
+                
+                // Dot
+                ctx.fillStyle = '#ff0000';
+                ctx.beginPath();
+                ctx.arc(x, y, 3, 0, Math.PI * 2);
+                ctx.fill();
+              });
+            }
+          });
+        }
+
+        animationFrame = requestAnimationFrame(drawScanner);
+      };
+
+      animationFrame = requestAnimationFrame(drawScanner);
+      return () => cancelAnimationFrame(animationFrame);
+    }
+  }, [qrResults]);
 
   useEffect(() => {
     if (canvasRef.current && videoRef.current) {
