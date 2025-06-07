@@ -12,13 +12,25 @@ function App() {
   const [showDebug, setShowDebug] = useState(false);
   const [scanCount, setScanCount] = useState(0);
   const [lastScan, setLastScan] = useState(null);
+  const [todayCount, setTodayCount] = useState(0);
+  const [lastStudent, setLastStudent] = useState(null);
   const API_URL = import.meta.env.VITE_API_URL;
   const processingRef = useRef(false);
   const lastProcessedRef = useRef(0);
-  const MIN_PROCESS_INTERVAL = 50; 
+  const MIN_PROCESS_INTERVAL = 30; // Faster interval
+  const CAPTURE_SIZE = {
+    width: 640,
+    height: 480
+  };
   const animationFrameRef = useRef(null);
   const lastPositionsRef = useRef(new Map()); 
   const scannerRef = useRef(null);
+  const BATCH_SIZE = 1; // Process one image at a time
+  const [batchedScans, setBatchedScans] = useState(new Set());
+  const [sessionStats, setSessionStats] = useState({ present: 0, absent: 0 });
+  const capturedCodesRef = useRef(new Set());
+  const frameCountRef = useRef(0);
+  const FRAME_SKIP = 2; // Process every 2nd frame
 
   useEffect(() => {
    
@@ -30,15 +42,15 @@ function App() {
     navigator.mediaDevices.getUserMedia({
       video: {
         facingMode: facingMode,
-        width: { ideal: 1280 },  // Back to higher resolution
-        height: { ideal: 720 },
-        frameRate: { ideal: 30 }
+        width: { ideal: CAPTURE_SIZE.width },
+        height: { ideal: CAPTURE_SIZE.height },
+        frameRate: { ideal: 15 } // Lower framerate for better processing
       }
     })
     .then((stream) => {
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        videoRef.current.play();  // Ensure video plays
+        videoRef.current.play();  
       }
     })
     .catch((err) => {
@@ -219,130 +231,106 @@ function App() {
 
   const captureFrame = async () => {
     if (!videoRef.current?.videoWidth || processingRef.current) {
+      requestAnimationFrame(captureFrame);
+      return;
+    }
+
+    frameCountRef.current++;
+    if (frameCountRef.current % FRAME_SKIP !== 0) {
+      requestAnimationFrame(captureFrame);
       return;
     }
 
     processingRef.current = true;
-    setIsScanning(true);
     
     try {
       const canvas = document.createElement("canvas");
-      const videoWidth = videoRef.current.videoWidth;
-      const videoHeight = videoRef.current.videoHeight;
+      canvas.width = CAPTURE_SIZE.width;
+      canvas.height = CAPTURE_SIZE.height;
       
-      canvas.width = videoWidth;  // Use full resolution
-      canvas.height = videoHeight;
+      const ctx = canvas.getContext("2d", {
+        alpha: false,
+        willReadFrequently: true,
+        desynchronized: true // Hardware acceleration
+      });
+
+      ctx.drawImage(
+        videoRef.current,
+        0, 0,
+        videoRef.current.videoWidth,
+        videoRef.current.videoHeight,
+        0, 0,
+        CAPTURE_SIZE.width,
+        CAPTURE_SIZE.height
+      );
+
+      const imageData = canvas.toDataURL("image/jpeg", 0.3); // Lower quality for speed
       
-      const ctx = canvas.getContext("2d");
-      ctx.drawImage(videoRef.current, 0, 0);
-      const imageData = canvas.toDataURL("image/jpeg", 0.8);
-      
-      addDebugLog(`Attempting to fetch: ${API_URL}/scan`);
       const response = await fetch(`${API_URL}/scan`, {
         method: "POST",
-        headers: { 
-          "Content-Type": "application/json"
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ image: imageData })
       });
-      
-      addDebugLog(`Response status: ${response.status}`);
-      
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-      
-      const data = await response.json();
-      console.log('Server response data:', data);
-      
-      if (data.length > 0) {
-        console.log('QR codes found:', data.length);
-        setQrResults(data); // Store the complete QR data objects
-      } else {
-        setQrResults([]); // Clear results when no QR codes are found
+
+      if (response.ok) {
+        const data = await response.json();
+        if (data.length > 0) {
+          setQrResults(prev => {
+            // Only update if data changed
+            if (JSON.stringify(prev) !== JSON.stringify(data)) {
+              data.forEach(result => handleSuccessfulScan(result.data));
+              return data;
+            }
+            return prev;
+          });
+        }
       }
     } catch (err) {
-      addDebugLog(`Network Error: ${err.message}`);
-      setError(`Connection failed: ${err.message}`);
+      console.error("Scan error:", err);
     } finally {
       processingRef.current = false;
-      setIsScanning(false);
+      requestAnimationFrame(captureFrame);
     }
   };
 
+  const handleSuccessfulScan = (data) => {
+    if (!batchedScans.has(data)) {
+      setBatchedScans(prev => new Set(prev).add(data));
+      // Quick feedback
+      new Audio('/beep.mp3').play().catch(() => {});
+    }
+  };
+
+  // Process batched scans
+  useEffect(() => {
+    const processBatch = () => {
+      if (batchedScans.size > 0) {
+        setTodayCount(prev => prev + batchedScans.size);
+        setScanCount(prev => prev + batchedScans.size);
+        setSessionStats(prev => ({
+          ...prev,
+          present: prev.present + batchedScans.size
+        }));
+        setBatchedScans(new Set());
+      }
+    };
+
+    const batchTimer = setInterval(processBatch, BATCH_SIZE);
+    return () => clearInterval(batchTimer);
+  }, [batchedScans]);
+
   return (
-    <div style={{ 
-      minHeight: '100vh',
-      background: '#000913',
-      padding: '1rem',
-      color: '#00ff88',
-      fontFamily: '"Share Tech Mono", monospace'
-    }}>
-      <div style={{
-        maxWidth: '900px',
-        margin: '0 auto',
-        background: 'rgba(0, 20, 40, 0.8)',
-        borderRadius: '8px',
-        padding: '2rem',
-        border: '1px solid #00ff88',
-        boxShadow: '0 0 30px rgba(0, 255, 136, 0.2)'
-      }}>
-        <div style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          marginBottom: '2rem',
-          padding: '1rem',
-          background: 'rgba(0, 40, 60, 0.5)',
-          borderRadius: '4px'
-        }}>
-          <div>
-            <h1 style={{ 
-              color: '#00ff88',
-              fontSize: '2rem',
-              textShadow: '0 0 10px rgba(0, 255, 136, 0.5)',
-              margin: 0,
-              letterSpacing: '2px'
-            }}>STUDENT VERIFICATION SYSTEM</h1>
-            <div style={{ color: '#0cf', fontSize: '0.9rem', marginTop: '0.5rem' }}>
-              {new Date().toLocaleDateString()} • ACTIVE SCAN
-            </div>
-          </div>
-          <div style={{
-            background: 'rgba(0, 40, 20, 0.9)',
-            padding: '1rem',
-            borderRadius: '4px',
-            border: '1px solid #00ff88',
-            minWidth: '150px',
-            textAlign: 'center'
-          }}>
-            <div style={{ fontSize: '0.8rem', color: '#0cf' }}>VERIFIED</div>
-            <div style={{ 
-              fontSize: '2rem',
-              fontWeight: 'bold',
-              textShadow: '0 0 10px rgba(0, 255, 136, 0.5)'
-            }}>{scanCount}</div>
-          </div>
+    <div style={{ padding: '20px' }}>
+      <div style={{ maxWidth: '800px', margin: '0 auto' }}>
+        <h1>Attendance Scanner</h1>
+        <div style={{ marginBottom: '20px' }}>
+          Total Scanned: {scanCount}
         </div>
 
-        <div style={{ 
-          position: 'relative',
-          width: '100%',
-          maxWidth: '700px',
-          margin: '1rem auto',
-          borderRadius: '8px',
-          overflow: 'hidden',
-          border: '2px solid #00ff88',
-          boxShadow: '0 0 30px rgba(0, 255, 136, 0.2)'
-        }}>
+        <div style={{ position: 'relative' }}>
           <video 
             ref={videoRef} 
-            style={{ 
-              width: '100%', 
-              display: 'block', 
-              borderRadius: '8px',
-              filter: 'contrast(1.1) brightness(1.1)'
-            }} 
+            style={{ width: '100%', display: 'block' }} 
             autoPlay 
             playsInline 
             muted 
@@ -354,122 +342,26 @@ function App() {
               top: 0,
               left: 0,
               width: '100%',
-              height: '100%',
-              pointerEvents: 'none'
+              height: '100%'
             }}
           />
-          {isScanning && (
-            <div style={{
-              position: 'absolute',
-              bottom: '1rem',
-              left: '50%',
-              transform: 'translateX(-50%)',
-              background: 'rgba(0, 40, 20, 0.9)',
-              color: '#00ff88',
-              padding: '0.5rem 2rem',
-              borderRadius: '20px',
-              fontSize: '0.9rem',
-              border: '1px solid #00ff88',
-              animation: 'pulse 2s infinite',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.5rem'
-            }}>
-              <div className="scanner-dot" /> SCANNING
-            </div>
-          )}
         </div>
 
-        <div style={{
-          background: 'rgba(0, 20, 30, 0.8)',
-          padding: '1.5rem',
-          borderRadius: '8px',
-          marginTop: '1rem',
-          border: '1px solid #00ff88'
-        }}>
-          <h3 style={{ 
-            margin: '0 0 1rem 0', 
-            color: '#0cf',
-            borderBottom: '1px solid #00ff88',
-            paddingBottom: '0.5rem',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '0.5rem'
-          }}>
-            <span className="icon">⚡</span> VERIFICATION LOG
-          </h3>
+        <div style={{ marginTop: '20px' }}>
           {qrResults.map((qr, idx) => (
-            <div 
-              key={idx}
-              style={{
-                background: '#e9ecef',
-                padding: '0.75rem',
-                borderRadius: '6px',
-                marginBottom: '0.5rem',
-                wordBreak: 'break-all'
-              }}
-            >
-              <div>Type: {qr.type}</div>
-              <div>Data: {qr.data}</div>
+            <div key={idx} style={{ marginBottom: '10px' }}>
+              {qr.data}
             </div>
           ))}
-          {qrResults.length === 0 && !error && (
-            <p style={{ color: '#6c757d' }}>No QR codes detected yet</p>
-          )}
         </div>
 
         <button
-          onClick={() => setShowDebug(prev => !prev)}
-          style={{
-            background: 'transparent',
-            border: '1px solid #dee2e6',
-            padding: '8px 16px',
-            borderRadius: '6px',
-            marginTop: '1rem',
-            cursor: 'pointer'
-          }}
+          onClick={() => setFacingMode(f => f === 'environment' ? 'user' : 'environment')}
+          style={{ marginTop: '20px' }}
         >
-          {showDebug ? 'Hide Debug Info' : 'Show Debug Info'}
+          Switch Camera
         </button>
       </div>
-
-      {showDebug && (
-        <div style={{ 
-          position: 'fixed',
-          bottom: 0,
-          left: 0,
-          right: 0,
-          background: 'rgba(0,0,0,0.9)',
-          color: 'white',
-          padding: '1rem',
-          fontSize: '0.875rem',
-          fontFamily: 'monospace',
-          maxHeight: '30vh',
-          overflowY: 'auto'
-        }}>
-          <h4 style={{ margin: '0 0 0.5rem 0' }}>Debug Logs:</h4>
-          {debugLogs.map((log, idx) => (
-            <div key={idx} style={{ opacity: 0.8 }}>{log}</div>
-          ))}
-        </div>
-      )}
-
-      <style>{`
-        @keyframes pulse {
-          0%, 100% { opacity: 1; }
-          50% { opacity: 0.6; }
-        }
-        .scanner-dot {
-          width: 8px;
-          height: 8px;
-          background: #00ff88;
-          border-radius: 50%;
-          animation: pulse 1s infinite;
-        }
-        .icon {
-          color: #0cf;
-        }
-      `}</style>
     </div>
   );
 }
